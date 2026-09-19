@@ -209,14 +209,14 @@ class GaeaTerrainProperties(bpy.types.PropertyGroup):
 
     # Import / Geometry Mode
     import_mode: EnumProperty(
-        name="Import Mode",
-        description="Select how the terrain should be created/imported",
+        name="Terrain Source",
+        description="Select whether to build terrain from Height Map or import 3D Mesh",
         items=[
-            ('AUTO', "Auto Detect", "Automatically imports mesh if found; otherwise generates heightmap plane"),
-            ('HEIGHTMAP', "Heightmap Plane", "Generate plane grid and apply heightmap displacement modifier"),
-            ('MESH', "Imported Mesh", "Import exported 3D mesh (OBJ/FBX) and scale to terrain dimensions"),
+            ('HEIGHTMAP', "Height Map", "Generate plane grid and apply heightmap displacement modifier", 'IMAGE_DATA', 0),
+            ('MESH', "3D Mesh", "Import native 3D mesh (ignores terrain dimension settings)", 'MESH_DATA', 1),
+            ('AUTO', "Auto Detect", "Automatically imports mesh if found; otherwise generates heightmap plane", 'NONE', 2),
         ],
-        default='AUTO'
+        default='HEIGHTMAP'
     )
 
     # Subdivision & Heightmap Resolution

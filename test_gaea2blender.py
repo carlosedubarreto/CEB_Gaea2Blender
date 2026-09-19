@@ -228,7 +228,7 @@ assert abs(bsdf_node.inputs['Roughness'].default_value - 1.0) < 1e-3, f"Expected
 print("Default roughness value (1.0) verified when no roughness map is set!")
 print("Heightmap terrain maps & modifiers successfully updated!")
 
-print("\n--- TEST 5: Test Mesh Mode Terrain Import ---")
+print("\n--- TEST 5: Test Mesh Mode Terrain Import (Ignoring Terrain Dimensions) ---")
 props.import_mode = 'MESH'
 props.terrain_width = 800.0
 props.terrain_length = 1200.0
@@ -245,11 +245,40 @@ mesh_terrain = bpy.context.active_object
 assert mesh_terrain is not None, "Mesh terrain not found"
 print(f"Imported mesh: {mesh_terrain.name}")
 print(f"Dimensions: X={mesh_terrain.dimensions.x:.2f}m, Y={mesh_terrain.dimensions.y:.2f}m, Z={mesh_terrain.dimensions.z:.2f}m")
-assert abs(mesh_terrain.dimensions.x - 800.0) < 1.0, f"Mesh X dimension mismatch: {mesh_terrain.dimensions.x}"
-assert abs(mesh_terrain.dimensions.y - 1200.0) < 1.0, f"Mesh Y dimension mismatch: {mesh_terrain.dimensions.y}"
-assert abs(mesh_terrain.dimensions.z - 400.0) < 1.0, f"Mesh Z dimension mismatch: {mesh_terrain.dimensions.z}"
+# Verify that terrain dimension settings (800x1200x400) are IGNORED and native mesh dimensions (20x20x5) are preserved
+assert abs(mesh_terrain.dimensions.x - 20.0) < 1.0, f"Mesh X dimension mismatch: {mesh_terrain.dimensions.x} (expected native 20m)"
+assert abs(mesh_terrain.dimensions.y - 20.0) < 1.0, f"Mesh Y dimension mismatch: {mesh_terrain.dimensions.y} (expected native 20m)"
+assert abs(mesh_terrain.dimensions.z - 5.0) < 1.0, f"Mesh Z dimension mismatch: {mesh_terrain.dimensions.z} (expected native 5m)"
 
-print("Mesh import & scaling mode PASSED!")
+# Verify UV map was automatically generated on the imported mesh
+assert len(mesh_terrain.data.uv_layers) >= 1, "Imported mesh must have at least one UV layer"
+active_uv = mesh_terrain.data.uv_layers.active
+assert active_uv is not None, "Mesh must have an active UV layer"
+print(f"Verified: Mesh has active UV layer '{active_uv.name}' with {len(active_uv.data)} loop coordinates!")
+for i in range(len(active_uv.data)):
+    u, v = active_uv.data[i].uv
+    assert -1e-4 <= u <= 1.0 + 1e-4, f"UV U out of [0, 1] bounds: {u}"
+    assert -1e-4 <= v <= 1.0 + 1e-4, f"UV V out of [0, 1] bounds: {v}"
+print("Verified: UV coordinates are correctly normalized to [0, 1]!")
+
+# Verify Texture Coordinate node in material and connection to Albedo
+mesh_mat = mesh_terrain.data.materials[0]
+texcoord_node = next((n for n in mesh_mat.node_tree.nodes if n.type == 'TEX_COORD'), None)
+assert texcoord_node is not None, "Material missing ShaderNodeTexCoord node"
+mesh_albedo = next((n for n in mesh_mat.node_tree.nodes if "Albedo" in (n.label or n.name)), None)
+assert mesh_albedo is not None, "Albedo node missing in mesh material"
+albedo_vector_link = next((link for link in mesh_mat.node_tree.links if link.to_node == mesh_albedo and link.to_socket.name == 'Vector'), None)
+assert albedo_vector_link is not None, "Albedo Vector socket must be connected"
+assert albedo_vector_link.from_node == texcoord_node and albedo_vector_link.from_socket.name == 'UV', "Albedo Vector must be connected to TexCoord UV output"
+print("Verified: Texture Coordinate UV output is connected to Albedo Vector socket!")
+
+# Test gaea.generate_uv_map operator
+bpy.context.view_layer.objects.active = mesh_terrain
+gen_uv_res = bpy.ops.gaea.generate_uv_map()
+assert gen_uv_res == {'FINISHED'}, f"gaea.generate_uv_map failed with {gen_uv_res}"
+print("Verified: gaea.generate_uv_map operator executed successfully!")
+
+print("Mesh import mode ignoring terrain dimensions and generating UVs PASSED!")
 
 print("\n--- TEST 5b: Test Updating Maps on Selected Mesh Terrain ---")
 assert CEB_Gaea2Blender.utils.is_gaea_terrain(mesh_terrain), "mesh_terrain should be recognized as Gaea terrain"
@@ -266,7 +295,7 @@ op_frame_res = bpy.ops.gaea.frame_view()
 assert op_frame_res == {'FINISHED'}, f"gaea.frame_view operator failed with {op_frame_res}"
 print("Auto frame scene view (Home) verified successfully!")
 
-print("\n--- TEST 6: Test UI Panel Draw ---")
+print("\n--- TEST 6: Test UI Panel Draw and Source Selector ---")
 from CEB_Gaea2Blender.panels import GAEA_PT_main_panel
 # Test panel draw by instantiating or invoking draw on mock/context
 # In Blender python, panel draw can be tested using a dummy panel instance or layout wrapper
@@ -276,25 +305,29 @@ class DummyLayout:
     def column(self, align=False): return self
     def label(self, text="", icon='NONE'): pass
     def prop(self, data, property, text="", icon='NONE', expand=False, slider=False, emboss=True): pass
+    def prop_enum(self, data, property, value, text="", icon='NONE'): pass
     def operator(self, operator, text="", icon='NONE'): return self
     def separator(self): pass
     scale_y = 1.0
+    enabled = True
 
 class DummyPanel:
     layout = DummyLayout()
 
 panel_dummy = DummyPanel()
-for show_dim in (True, False):
-    for show_corr in (True, False):
-        for show_geo in (True, False):
-            for show_mat in (True, False):
-                props.show_dimension_settings = show_dim
-                props.show_map_correspondences = show_corr
-                props.show_geometry_settings = show_geo
-                props.show_material_settings = show_mat
-                props.show_file_slots = False
-                GAEA_PT_main_panel.draw(panel_dummy, bpy.context)
-print("UI Panel draw executed without errors for all collapsed and expanded states!")
+for mode in ('HEIGHTMAP', 'MESH'):
+    props.import_mode = mode
+    for show_dim in (True, False):
+        for show_corr in (True, False):
+            for show_geo in (True, False):
+                for show_mat in (True, False):
+                    props.show_dimension_settings = show_dim
+                    props.show_map_correspondences = show_corr
+                    props.show_geometry_settings = show_geo
+                    props.show_material_settings = show_mat
+                    props.show_file_slots = False
+                    GAEA_PT_main_panel.draw(panel_dummy, bpy.context)
+print("UI Panel draw executed without errors for all collapsed/expanded states and modes (HEIGHTMAP & MESH)!")
 
 print("\n--- TEST 7: Test Unregister ---")
 CEB_Gaea2Blender.unregister()

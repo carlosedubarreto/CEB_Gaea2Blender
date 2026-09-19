@@ -120,6 +120,15 @@ class GAEA_OT_scan_folder(bpy.types.Operator):
         props.found_image_count = len(results['all_images'])
         props.has_scanned = True
 
+        # Determine initial import_mode based on detected files
+        if results['height'] and results['mesh']:
+            if props.import_mode not in {'HEIGHTMAP', 'MESH'}:
+                props.import_mode = 'HEIGHTMAP'
+        elif results['mesh']:
+            props.import_mode = 'MESH'
+        elif results['height']:
+            props.import_mode = 'HEIGHTMAP'
+
         status_msg = f"Found: {props.found_mesh_count} mesh(es), {props.found_image_count} map(s)"
         props.scan_status = status_msg
         self.report({'INFO'}, f"Gaea scan complete: {status_msg}")
@@ -200,11 +209,14 @@ class GAEA_OT_import_terrain(bpy.types.Operator):
         height_path = bpy.path.abspath(props.detected_height_path) if props.detected_height_path else ""
 
         # Determine effective mode
+        has_mesh = bool(mesh_path and os.path.isfile(mesh_path))
+        has_height = bool(height_path and os.path.isfile(height_path))
+
         mode = props.import_mode
         if mode == 'AUTO':
-            if mesh_path and os.path.isfile(mesh_path):
+            if has_mesh and not has_height:
                 mode = 'MESH'
-            elif height_path and os.path.isfile(height_path):
+            elif has_height:
                 mode = 'HEIGHTMAP'
             else:
                 self.report({'ERROR'}, "Cannot auto-detect: Neither mesh nor heightmap found. Run Scan Folder first.")
@@ -254,16 +266,17 @@ class GAEA_OT_import_terrain(bpy.types.Operator):
 
             terrain_obj = imported_objs[0]
             terrain_obj.name = "Gaea_Terrain_Mesh"
+            terrain_obj["is_gaea_terrain"] = True
+            terrain_obj["gaea_type"] = "Imported Mesh"
 
-            # Scale to user-specified dimensions
-            utils.scale_imported_mesh(
-                obj=terrain_obj,
-                target_width=props.terrain_width,
-                target_length=props.terrain_length,
-                target_height=props.terrain_height,
-                origin_type=props.terrain_origin,
-                keep_aspect=props.mesh_keep_aspect
-            )
+            bpy.context.view_layer.objects.active = terrain_obj
+            terrain_obj.select_set(True)
+
+            # Ensure the mesh has valid top-down UV coordinates for Gaea texture maps
+            utils.ensure_mesh_uv_map(terrain_obj)
+
+            # Note: Terrain dimension settings are ignored for imported mesh.
+            # Native mesh scale and geometry from Gaea are preserved.
 
             if props.smooth_shading:
                 for poly in terrain_obj.data.polygons:
@@ -275,7 +288,7 @@ class GAEA_OT_import_terrain(bpy.types.Operator):
 
         # Build & assign PBR Material
         detected_maps = {
-            'height': height_path if os.path.isfile(height_path) else None,
+            'height': height_path if (mode == 'HEIGHTMAP' and os.path.isfile(height_path)) else None,
             'normal': bpy.path.abspath(props.detected_normal_path) if props.detected_normal_path and os.path.isfile(bpy.path.abspath(props.detected_normal_path)) else None,
             'albedo': bpy.path.abspath(props.detected_albedo_path) if props.detected_albedo_path and os.path.isfile(bpy.path.abspath(props.detected_albedo_path)) else None,
             'roughness': bpy.path.abspath(props.detected_roughness_path) if props.detected_roughness_path and os.path.isfile(bpy.path.abspath(props.detected_roughness_path)) else None,
@@ -409,6 +422,27 @@ class GAEA_OT_frame_view(bpy.types.Operator):
         return {'FINISHED'}
 
 
+class GAEA_OT_generate_uv_map(bpy.types.Operator):
+    """Generate or reset top-down orthographic UV coordinates on the selected terrain mesh"""
+    bl_idname = "gaea.generate_uv_map"
+    bl_label = "Generate Top-Down UVs"
+    bl_description = "Generate top-down planar UV coordinates matching Gaea's orthographic coordinate system"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    @classmethod
+    def poll(cls, context):
+        return context.active_object is not None and context.active_object.type == 'MESH'
+
+    def execute(self, context):
+        obj = context.active_object
+        success = utils.ensure_mesh_uv_map(obj, force_planar=True)
+        if success:
+            self.report({'INFO'}, f"Generated top-down UV map on '{obj.name}'.")
+        else:
+            self.report({'WARNING'}, f"Could not generate UV map on '{obj.name}'.")
+        return {'FINISHED'}
+
+
 classes = (
     GAEA_OT_scan_folder,
     GAEA_OT_clear_slots,
@@ -416,6 +450,7 @@ classes = (
     GAEA_OT_setup_material,
     GAEA_OT_update_terrain_maps,
     GAEA_OT_frame_view,
+    GAEA_OT_generate_uv_map,
 )
 
 

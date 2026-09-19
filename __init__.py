@@ -1,7 +1,7 @@
 bl_info = {
     "name": "CEB Gaea to Blender Importer",
     "author": "Carlos Barreto, Antigravity",
-    "version": (1, 0, 0),
+    "version": (1, 1, 0),
     "blender": (4, 0, 0),
     "location": "View3D > Sidebar > Gaea Tab",
     "description": "Scan QuadSpinner Gaea output folders to import terrains (meshes or heightmap planes) with custom dimensions, subdivision controls, and automated PBR shading.",

@@ -48,23 +48,48 @@ class GAEA_PT_main_panel(bpy.types.Panel):
         elif props.folder_path:
             box_scan.label(text="Click 'Scan Output Folder' to analyze", icon='INFO')
 
+        # Check available sources
+        mesh_file = bpy.path.abspath(props.detected_mesh_path) if props.detected_mesh_path else ""
+        height_file = bpy.path.abspath(props.detected_height_path) if props.detected_height_path else ""
+        has_mesh = bool(mesh_file and os.path.isfile(mesh_file))
+        has_height = bool(height_file and os.path.isfile(height_file))
+
+        is_mesh = (props.import_mode == 'MESH')
+        if not is_mesh and not has_height and has_mesh:
+            is_mesh = True
+
+        # --- SELECTION BUTTONS (When both Height Map and Mesh are detected) ---
+        if has_height and has_mesh:
+            box_choice = layout.box()
+            row_choice_title = box_choice.row(align=True)
+            row_choice_title.label(text="Select Terrain Source to Load:", icon='IMPORT')
+            row_choice_btns = box_choice.row(align=True)
+            row_choice_btns.scale_y = 1.3
+            row_choice_btns.prop_enum(props, "import_mode", 'HEIGHTMAP', text="Height Map", icon='IMAGE_DATA')
+            row_choice_btns.prop_enum(props, "import_mode", 'MESH', text="3D Mesh", icon='MESH_DATA')
+
         # --- SECTION 2: Terrain Dimensions ---
         box_dim = layout.box()
         row_dim_toggle = box_dim.row(align=True)
         icon_dim = 'DISCLOSURE_TRI_DOWN' if props.show_dimension_settings else 'DISCLOSURE_TRI_RIGHT'
-        row_dim_toggle.prop(props, "show_dimension_settings", text="Terrain Dimensions", icon=icon_dim, emboss=False)
+        dim_title = "Terrain Dimensions (Ignored for Mesh)" if is_mesh else "Terrain Dimensions"
+        row_dim_toggle.prop(props, "show_dimension_settings", text=dim_title, icon=icon_dim, emboss=False)
 
         if props.show_dimension_settings:
+            if is_mesh:
+                box_notice = box_dim.box()
+                box_notice.label(text="Mesh Selected: Terrain dimensions are ignored.", icon='INFO')
+                box_notice.label(text="Native mesh scale & geometry will be preserved.", icon='BLANK1')
+
             col_dim = box_dim.column(align=True)
+            col_dim.enabled = not is_mesh
             col_dim.prop(props, "terrain_width", text="Width (X)")
             col_dim.prop(props, "terrain_length", text="Length (Y)")
             col_dim.prop(props, "terrain_height", text="Elevation (Z)")
 
             row_orig = box_dim.row()
+            row_orig.enabled = not is_mesh
             row_orig.prop(props, "terrain_origin", expand=True)
-
-            if props.import_mode in {'MESH', 'AUTO'}:
-                box_dim.prop(props, "mesh_keep_aspect")
 
         # --- SECTION 3: Map Correspondences ---
         box_corr = layout.box()
@@ -138,7 +163,9 @@ class GAEA_PT_main_panel(bpy.types.Panel):
             col_geo = box_geo.column()
             col_geo.prop(props, "import_mode", text="Mode")
 
-            if props.import_mode in {'HEIGHTMAP', 'AUTO'}:
+            if is_mesh:
+                box_geo.label(text="Subdivisions apply only to Height Map plane mode.", icon='INFO')
+            else:
                 col_sub = col_geo.column(align=True)
                 col_sub.prop(props, "base_subdivisions")
                 col_sub.prop(props, "subdiv_levels_viewport")
@@ -163,6 +190,11 @@ class GAEA_PT_main_panel(bpy.types.Panel):
 
             if not props.detected_roughness_path:
                 col_mat.prop(props, "default_roughness", slider=True, text="Roughness Value")
+
+            # UV & Material Actions on active object
+            if active_obj and active_obj.type == 'MESH':
+                row_uv = col_mat.row(align=True)
+                row_uv.operator("gaea.generate_uv_map", text="Generate Top-Down UVs", icon='UV')
 
             # Update material / maps on active object
             if is_terrain:
@@ -206,7 +238,8 @@ class GAEA_PT_main_panel(bpy.types.Panel):
 
         row_action = layout.row()
         row_action.scale_y = 1.4 if is_terrain else 1.8
-        btn_text = "Create New Terrain" if is_terrain else "Import & Build Terrain"
+        mode_suffix = " (Mesh)" if is_mesh else " (Height Map)"
+        btn_text = f"Create New Terrain{mode_suffix}" if is_terrain else f"Import & Build Terrain{mode_suffix}"
         row_action.operator("gaea.import_terrain", text=btn_text, icon='IMPORT')
 
 

@@ -268,6 +268,108 @@ def scale_imported_mesh(obj, target_width=2048.0, target_length=2048.0,
     obj["gaea_type"] = "Imported Mesh"
 
 
+def ensure_mesh_uv_map(obj, force_planar=False):
+    """
+    Ensures the mesh object has a valid UV map.
+    If no UV map exists (or force_planar is True, or existing UV map is empty/all-zero),
+    generates a normalized [0, 1] top-down planar UV map matching Gaea's orthographic coordinate space.
+    """
+    if not obj or obj.type != 'MESH' or not obj.data:
+        return False
+
+    mesh = obj.data
+    needs_uv = False
+
+    if len(mesh.uv_layers) == 0:
+        needs_uv = True
+    elif force_planar:
+        needs_uv = True
+    else:
+        uv_layer = mesh.uv_layers.active or mesh.uv_layers[0]
+        if len(uv_layer.data) == 0:
+            needs_uv = True
+        else:
+            # Check if all sampled UV coordinates are near (0, 0)
+            all_zero = True
+            for i in range(min(50, len(uv_layer.data))):
+                u, v = uv_layer.data[i].uv
+                if abs(u) > 1e-5 or abs(v) > 1e-5:
+                    all_zero = False
+                    break
+            if all_zero:
+                needs_uv = True
+
+    if needs_uv:
+        if len(mesh.vertices) == 0 or len(mesh.loops) == 0:
+            return False
+
+        uv_layer = mesh.uv_layers.get("UVMap")
+        if not uv_layer:
+            uv_layer = mesh.uv_layers.new(name="UVMap")
+        mesh.uv_layers.active = uv_layer
+
+        try:
+            import numpy as np
+
+            # Fast vectorized UV calculation using numpy
+            num_verts = len(mesh.vertices)
+            coords = np.empty(num_verts * 3, dtype=np.float32)
+            mesh.vertices.foreach_get('co', coords)
+            coords = coords.reshape((-1, 3))
+
+            # Transform to world space
+            mat = np.array(obj.matrix_world, dtype=np.float32)
+            coords_homo = np.hstack([coords, np.ones((num_verts, 1), dtype=np.float32)])
+            world_coords = (coords_homo @ mat.T)[:, :3]
+
+            min_x = float(world_coords[:, 0].min())
+            max_x = float(world_coords[:, 0].max())
+            min_y = float(world_coords[:, 1].min())
+            max_y = float(world_coords[:, 1].max())
+
+            w = max_x - min_x if max_x - min_x > 1e-5 else 1.0
+            l = max_y - min_y if max_y - min_y > 1e-5 else 1.0
+
+            vert_u = (world_coords[:, 0] - min_x) / w
+            vert_v = (world_coords[:, 1] - min_y) / l
+            vert_uvs = np.column_stack([vert_u, vert_v]).astype(np.float32)
+
+            # Map per-vertex UVs to all mesh loops
+            loop_vert_idx = np.empty(len(mesh.loops), dtype=np.int32)
+            mesh.loops.foreach_get('vertex_index', loop_vert_idx)
+            loop_uvs = vert_uvs[loop_vert_idx].ravel()
+
+            uv_layer.data.foreach_set('uv', loop_uvs)
+
+        except Exception:
+            # Pure Python fallback
+            world_mat = obj.matrix_world
+            min_x = min((world_mat @ v.co).x for v in mesh.vertices)
+            max_x = max((world_mat @ v.co).x for v in mesh.vertices)
+            min_y = min((world_mat @ v.co).y for v in mesh.vertices)
+            max_y = max((world_mat @ v.co).y for v in mesh.vertices)
+
+            width = max_x - min_x if max_x - min_x > 1e-5 else 1.0
+            length = max_y - min_y if max_y - min_y > 1e-5 else 1.0
+
+            uv_data = uv_layer.data
+            for poly in mesh.polygons:
+                for loop_idx in poly.loop_indices:
+                    v_idx = mesh.loops[loop_idx].vertex_index
+                    world_co = world_mat @ mesh.vertices[v_idx].co
+                    u = (world_co.x - min_x) / width
+                    v = (world_co.y - min_y) / length
+                    uv_data[loop_idx].uv = (u, v)
+
+        mesh.update()
+        return True
+
+    # Ensure active UV layer is set
+    if not mesh.uv_layers.active:
+        mesh.uv_layers.active = mesh.uv_layers[0]
+    return False
+
+
 def setup_height_displacement(obj, height_image_path, terrain_height=500.0,
                               subdiv_viewport=4, subdiv_render=6,
                               subdiv_type='SIMPLE'):
@@ -336,6 +438,9 @@ def build_terrain_material(obj, detected_maps, terrain_height=500.0,
     links = mat.node_tree.links
     nodes.clear()
 
+    # Ensure the object has a valid UV map
+    ensure_mesh_uv_map(obj)
+
     # Base coordinates
     pos_x = -800
     pos_y = 300
@@ -347,6 +452,10 @@ def build_terrain_material(obj, detected_maps, terrain_height=500.0,
     node_bsdf = nodes.new(type='ShaderNodeBsdfPrincipled')
     node_bsdf.location = (50, 200)
     links.new(node_bsdf.outputs['BSDF'], node_out.inputs['Surface'])
+
+    # Texture Coordinate Node for explicit UV mapping
+    node_texcoord = nodes.new(type='ShaderNodeTexCoord')
+    node_texcoord.location = (pos_x - 300, 300)
 
     # 1. Albedo / Base Color (Color Map - sRGB)
     albedo_img = None
@@ -362,6 +471,7 @@ def build_terrain_material(obj, detected_maps, terrain_height=500.0,
             node_albedo.image = albedo_img
             node_albedo.label = "Albedo / Base Color"
             node_albedo.location = (pos_x, 300)
+            links.new(node_texcoord.outputs['UV'], node_albedo.inputs['Vector'])
 
     # 2. Ambient Occlusion
     ao_img = None
@@ -373,6 +483,7 @@ def build_terrain_material(obj, detected_maps, terrain_height=500.0,
             node_ao.image = ao_img
             node_ao.label = "Ambient Occlusion"
             node_ao.location = (pos_x, 50)
+            links.new(node_texcoord.outputs['UV'], node_ao.inputs['Vector'])
 
     # Connect Albedo & AO
     if node_albedo and node_ao and mix_ao:
@@ -398,6 +509,7 @@ def build_terrain_material(obj, detected_maps, terrain_height=500.0,
             node_rough.image = rough_img
             node_rough.label = "Roughness"
             node_rough.location = (pos_x, -200)
+            links.new(node_texcoord.outputs['UV'], node_rough.inputs['Vector'])
             if 'Roughness' in node_bsdf.inputs:
                 links.new(node_rough.outputs['Color'], node_bsdf.inputs['Roughness'])
     else:
@@ -413,6 +525,7 @@ def build_terrain_material(obj, detected_maps, terrain_height=500.0,
             node_norm_tex.image = normal_img
             node_norm_tex.label = "Normal Map"
             node_norm_tex.location = (pos_x, -450)
+            links.new(node_texcoord.outputs['UV'], node_norm_tex.inputs['Vector'])
 
             node_norm_map = nodes.new(type='ShaderNodeNormalMap')
             node_norm_map.location = (pos_x + 350, -450)
@@ -430,6 +543,7 @@ def build_terrain_material(obj, detected_maps, terrain_height=500.0,
             node_height_tex.image = height_img
             node_height_tex.label = "Height (Cycles True Displacement)"
             node_height_tex.location = (pos_x, -700)
+            links.new(node_texcoord.outputs['UV'], node_height_tex.inputs['Vector'])
 
             node_disp = nodes.new(type='ShaderNodeDisplacement')
             node_disp.location = (pos_x + 350, -700)
@@ -456,6 +570,7 @@ def build_terrain_material(obj, detected_maps, terrain_height=500.0,
             base_filename = os.path.splitext(os.path.basename(mask_path))[0]
             node_mask.label = f"Mask: {base_filename}"
             node_mask.location = (pos_x, aux_y)
+            links.new(node_texcoord.outputs['UV'], node_mask.inputs['Vector'])
             aux_y -= 250
 
     # Assign material to object
@@ -467,11 +582,11 @@ def build_terrain_material(obj, detected_maps, terrain_height=500.0,
     return mat
 
 
-def configure_scene_and_viewport(scene=None, min_clip_end=100000.0):
+def configure_scene_and_viewport(scene=None, min_clip_end=100000.0, set_material_shading=True):
     """
-    Ensure scene units are set to Metric (Meters) and update 3D Viewport clip_end
-    (and scene camera clip_end) to at least min_clip_end (default 100,000 meters)
-    so large terrains are fully visible without clipping.
+    Ensure scene units are set to Metric (Meters), update 3D Viewport clip_end
+    (and scene camera clip_end) to at least min_clip_end (default 100,000 meters),
+    and set viewport shading to MATERIAL preview so textures are immediately visible.
     """
     if not scene:
         scene = bpy.context.scene
@@ -488,6 +603,8 @@ def configure_scene_and_viewport(scene=None, min_clip_end=100000.0):
         if space_data and space_data.type == 'VIEW_3D':
             if space_data.clip_end < min_clip_end:
                 space_data.clip_end = min_clip_end
+            if set_material_shading and hasattr(space_data, 'shading'):
+                space_data.shading.type = 'MATERIAL'
     except Exception:
         pass
 
@@ -497,8 +614,11 @@ def configure_scene_and_viewport(scene=None, min_clip_end=100000.0):
             for area in screen.areas:
                 if area.type == 'VIEW_3D':
                     for space in area.spaces:
-                        if space.type == 'VIEW_3D' and space.clip_end < min_clip_end:
-                            space.clip_end = min_clip_end
+                        if space.type == 'VIEW_3D':
+                            if space.clip_end < min_clip_end:
+                                space.clip_end = min_clip_end
+                            if set_material_shading and hasattr(space, 'shading'):
+                                space.shading.type = 'MATERIAL'
     except Exception:
         pass
 
