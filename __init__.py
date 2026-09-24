@@ -1,14 +1,19 @@
 bl_info = {
     "name": "CEB Gaea to Blender Importer",
     "author": "Carlos Barreto, Antigravity",
-    "version": (1, 1, 0),
+    "version": (1, 2, 0),
     "blender": (4, 0, 0),
     "location": "View3D > Sidebar > Gaea Tab",
-    "description": "Scan QuadSpinner Gaea output folders to import terrains (meshes or heightmap planes) with custom dimensions, subdivision controls, and automated PBR shading.",
+    "description": "Scan QuadSpinner Gaea output folders to import terrains (meshes, heightmap planes, or multi-tile grids) with custom dimensions, subdivision controls, and automated PBR shading.",
     "warning": "",
     "doc_url": "",
     "category": "Import-Export",
 }
+
+## v1.02
+# - add option to load maps, like snow, wear and others
+# - create a material to load the color map as reference for the colors in the landscape but use a procedural way to color the landscape
+
 
 import importlib
 from . import properties

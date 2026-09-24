@@ -7,6 +7,14 @@ A Blender add-on that imports generated terrain assets from **QuadSpinner Gaea**
 - **Automatic File Scanning & Classification**:
   - Automatically identifies Meshes (`.obj`, `.fbx`, `.ply`), Heightmaps (`.exr`, `.png`, `.tif`), Normal maps, Albedo / Color maps, Roughness, Ambient Occlusion, and auxiliary masks.
   - Manual override slots to inspect and adjust any detected map before importing.
+- **Tiled Builds & Multi-Tile Grids (e.g. 2x2, 4x4, 8x8 tiles)**:
+  - Automatically detects tiled builds exported from Gaea (supporting `_y%Y%_x%X%`, `_x%X%_y%Y%`, UDIM `1001..1099`, and numbered tiles).
+  - Displays detected grid amount (e.g. `4x4 tiles (16 total)`), tile count, and per-tile dimensions relative to total terrain size.
+  - Automatically builds and aligns individual terrain tiles into a seamless, coordinate-accurate grid without edge gaps.
+  - Sizing considers the total terrain size: each tile receives an exact portion of total width and length (`total_width / cols` and `total_length / rows`), with full elevation applied.
+  - Parents all tiles under an empty root object (`Gaea_Terrain_Tiled`) and organizes them inside a dedicated Blender Collection.
+  - Optional toggle to flip Y row order (`tile_flip_y`) if Gaea was configured with inverted or North-facing Y0.
+  - Full support for updating maps across all tiles simultaneously.
 - **Custom Terrain Dimensions**:
   - Set real-world Width ($X$), Length ($Y$), and maximum Elevation ($Z$) in meters.
   - Configurable origin alignment: **Center** or **Bottom-Left Corner**.

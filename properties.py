@@ -17,50 +17,78 @@ from bpy.props import (
 from . import utils
 
 
+_FOLDER_CACHE = {
+    'folder': None,
+    'mtime': 0,
+    'entries': [],
+}
+
+
+def clear_folder_cache():
+    """Clear cached folder file entries."""
+    global _FOLDER_CACHE
+    _FOLDER_CACHE = {
+        'folder': None,
+        'mtime': 0,
+        'entries': [],
+    }
+
+
 def get_available_folder_files(self, context):
     """
     Dynamic Enum callback returning files from the selected Gaea folder
     matching the slot type (images for texture maps, meshes for 3D mesh).
+    Uses in-memory caching keyed by folder path and modification time
+    to eliminate filesystem I/O overhead on UI redraws.
     """
-    items = [('NONE', "(Select from folder)", "No image selected for this slot", 'X', 0)]
-    if not context:
-        return items
+    items = [('NONE', "(Select from folder)", "No image selected for this slot", 0)]
 
-    scene = getattr(context, 'scene', None)
-    if not scene:
-        return items
+    scene = getattr(context, 'scene', None) if context else getattr(bpy.context, 'scene', None)
+    folder = ""
+    if scene:
+        props = getattr(scene, 'gaea_terrain_props', None)
+        if props and props.folder_path:
+            folder = bpy.path.abspath(props.folder_path)
 
-    props = getattr(scene, 'gaea_terrain_props', None)
-    if not props or not props.folder_path:
-        return items
+    global _FOLDER_CACHE
+    if folder and os.path.isdir(folder):
+        try:
+            mtime = os.path.getmtime(folder)
+        except Exception:
+            mtime = 0
 
-    folder = bpy.path.abspath(props.folder_path)
-    if not os.path.isdir(folder):
-        return items
+        if _FOLDER_CACHE['folder'] != folder or _FOLDER_CACHE['mtime'] != mtime:
+            cached = []
+            try:
+                with os.scandir(folder) as it:
+                    for entry in it:
+                        if entry.is_file():
+                            ext = os.path.splitext(entry.name)[1].lower()
+                            if ext in utils.SUPPORTED_MESH_EXTS:
+                                cached.append((entry.name, entry.path, True))
+                            elif ext in utils.SUPPORTED_IMAGE_EXTS:
+                                cached.append((entry.name, entry.path, False))
+                cached.sort(key=lambda x: x[0])
+                _FOLDER_CACHE['folder'] = folder
+                _FOLDER_CACHE['mtime'] = mtime
+                _FOLDER_CACHE['entries'] = cached
+            except Exception:
+                pass
 
-    try:
-        entries = sorted(os.listdir(folder))
-    except Exception:
-        return items
-
-    is_mesh = (self.category == 'Mesh')
-    valid_exts = utils.SUPPORTED_MESH_EXTS if is_mesh else utils.SUPPORTED_IMAGE_EXTS
-
+    is_mesh = (getattr(self, 'category', '') == 'Mesh')
+    found_names = set()
     idx = 1
-    found_ids = set()
-    for entry in entries:
-        ext = os.path.splitext(entry)[1].lower()
-        if ext in valid_exts:
-            full_path = os.path.join(folder, entry)
-            if os.path.isfile(full_path):
-                icon_name = 'MESH_DATA' if is_mesh else 'IMAGE_DATA'
-                items.append((entry, entry, full_path, icon_name, idx))
-                found_ids.add(entry)
-                idx += 1
+    for name, path, file_is_mesh in _FOLDER_CACHE.get('entries', []):
+        if file_is_mesh == is_mesh:
+            items.append((name, name, path, idx))
+            found_names.add(name)
+            idx += 1
 
-    # In case self.filename is already set and not in current folder entries
-    if self.filename and self.filename != "[Not Found]" and self.filename not in found_ids:
-        items.append((self.filename, self.filename, self.filepath, 'FILE', idx))
+    # If the currently assigned file is not in the folder cache (e.g. custom or moved file),
+    # preserve it with a stable high index to prevent RNA mismatch warnings without shifting other items.
+    cur = getattr(self, 'filename', '')
+    if cur and cur != "[Not Found]" and cur != 'NONE' and cur not in found_names:
+        items.append((cur, cur, getattr(self, 'filepath', ''), 999999))
 
     return items
 
@@ -146,6 +174,129 @@ class GaeaTerrainProperties(bpy.types.PropertyGroup):
     )
     found_mesh_count: IntProperty(default=0)
     found_image_count: IntProperty(default=0)
+
+    # Tiled Terrain metadata & settings
+    is_tiled: BoolProperty(
+        name="Is Tiled Terrain",
+        description="Whether the scanned folder contains tiled terrain assets",
+        default=False
+    )
+    use_tiling: BoolProperty(
+        name="Load as Tiled Terrain",
+        description="Load and assemble detected tiles into a continuous coordinate-aligned terrain grid",
+        default=True
+    )
+    tile_cols: IntProperty(
+        name="Tile Columns (X)",
+        description="Number of tile columns along horizontal X axis",
+        default=1,
+        min=1
+    )
+    tile_rows: IntProperty(
+        name="Tile Rows (Y)",
+        description="Number of tile rows along vertical Y axis",
+        default=1,
+        min=1
+    )
+    tile_total_count: IntProperty(
+        name="Total Tiles",
+        description="Total number of tiles in the grid",
+        default=1,
+        min=1
+    )
+    tile_grid_info: StringProperty(
+        name="Tile Grid Info",
+        description="Formatted tile grid summary, e.g. '4x4 tiles'",
+        default=""
+    )
+    tile_flip_y: BoolProperty(
+        name="Flip Y Row Order (Y0 at North)",
+        description="Flip Y row order (enable if Y0 corresponds to the north/top of the terrain in Gaea export)",
+        default=True
+    )
+    auto_scale_tiled_subdiv: BoolProperty(
+        name="Scale Subdivisions for Tiles",
+        description="Proportionally downscale base subdivisions and modifier levels per tile according to grid dimensions to prevent excessive memory usage",
+        default=True
+    )
+    show_detail_tile_settings: BoolProperty(
+        name="Show Detail Tile Settings",
+        description="Toggle display of detail tile replacement settings",
+        default=True
+    )
+    enable_tile_override: BoolProperty(
+        name="Replace Tile with High-Res Folder",
+        description="Use another folder containing higher-resolution maps for a specific tile",
+        default=False
+    )
+    detail_folder_path: StringProperty(
+        name="Detail Folder",
+        description="Path to folder containing high-resolution replacement maps (e.g. 2k/4k) for a specific tile",
+        subtype='DIR_PATH',
+        default=""
+    )
+    detail_tile_x: IntProperty(
+        name="Tile X",
+        description="Column index (X) of the tile to replace (0-indexed)",
+        default=0,
+        min=0
+    )
+    detail_tile_y: IntProperty(
+        name="Tile Y",
+        description="Row index (Y) of the tile to replace (0-indexed)",
+        default=0,
+        min=0
+    )
+    detail_subdiv_boost: IntProperty(
+        name="Extra Subdivision Levels",
+        description="Additional viewport and render subdivision levels for the detailed tile",
+        default=1,
+        min=0,
+        max=4
+    )
+    detail_height_scale: FloatProperty(
+        name="Detail Height Scale",
+        description="Height scale multiplier for the detail tile displacement (use to match elevation with neighboring tiles)",
+        default=1.0,
+        min=-100.0,
+        max=100.0,
+        step=10,
+        precision=3
+    )
+    detail_invert_height: BoolProperty(
+        name="Invert Detail Height",
+        description="Invert height displacement direction for the detail tile (peaks become valleys)",
+        default=False
+    )
+    detail_mid_level: FloatProperty(
+        name="Detail Midlevel (Elevation Offset)",
+        description="Displacement midlevel offset for the detail tile (0.0 = base level)",
+        default=0.0,
+        min=-10.0,
+        max=10.0,
+        step=5,
+        precision=3
+    )
+    detail_flip_y: BoolProperty(
+        name="Flip Detail Y (Vertical)",
+        description="Flip the detail tile texture coordinates vertically (North/South)",
+        default=False
+    )
+    detail_auto_match: BoolProperty(
+        name="Auto-Match Elevation & Orientation",
+        description="Automatically calculate height scale, midlevel offset, and orientation from base terrain",
+        default=True
+    )
+    detail_keep_original_height: BoolProperty(
+        name="Keep Original Heightmap",
+        description="Preserve the tile's original heightmap and displacement modifier, replacing only the surface material textures (Albedo, Normal, AO, Roughness, and Masks)",
+        default=False
+    )
+    tile_data_json: StringProperty(
+        name="Tile Data JSON",
+        description="Internal serialized mapping of tile coordinates to file paths",
+        default=""
+    )
     show_dimension_settings: BoolProperty(
         name="Show Terrain Dimensions",
         description="Toggle display of terrain dimension settings",
@@ -159,7 +310,7 @@ class GaeaTerrainProperties(bpy.types.PropertyGroup):
     show_geometry_settings: BoolProperty(
         name="Show Geometry & Subdivisions",
         description="Toggle display of geometry and subdivision settings",
-        default=False
+        default=True
     )
     show_material_settings: BoolProperty(
         name="Show Material & Shading",
